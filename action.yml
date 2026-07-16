@@ -1,5 +1,5 @@
 name: 'TWRP Device Tree Generator'
-description: '从 boot.img 自动生成 TWRP 设备树，规避3.0.0属性校验报错'
+description: '从 boot.img 自动生成 TWRP 设备树，兼容无ro.product.system.device镜像'
 author: 'twrp-action'
 branding:
   icon: 'smartphone'
@@ -26,7 +26,7 @@ outputs:
     value: ${{ steps.dtgen.outputs.device-codename }}
   manufacturer:
     description: '最终厂商名'
-    value: ${{ steps.dtgen.outputs.device-codename }}
+    value: ${{ steps.dtgen.outputs.manufacturer }}
   device-tree-path:
     description: '设备树完整路径'
     value: ${{ steps.dtgen.outputs.device-tree-path }}
@@ -39,12 +39,14 @@ runs:
         sudo apt-get update -qq
         sudo apt-get install -y -qq git-core python3 python3-pip unzip cpio
 
-    - name: 安装兼容版 twrpdtgen 2.2.0（绕过严格属性校验）
+    - name: 安装固定版本依赖（匹配twrpdtgen 2.2.0）
       shell: bash
       run: |
         unset PIP_BREAK_SYSTEM_PACKAGES
         curl -sS https://bootstrap.pypa.io/get-pip.py | python3
-        pip3 install "twrpdtgen==2.2.0" -q
+        # 先锁定依赖库版本，再装twrpdtgen
+        pip3 install sebaubuntu-libs==1.4.0 -q
+        pip3 install twrpdtgen==2.2.0 -q
         git config --global user.name "DT Builder"
         git config --global user.email "builder@twrp.local"
 
