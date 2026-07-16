@@ -63,7 +63,7 @@ runs:
         mkdir -p ${{ github.workspace }}/input
         wget -q -O ${{ github.workspace }}/input/boot.img "${{ inputs.boot-img-url }}"
 
-    - name: 修补 build.prop（方案B 强制补全 system 属性，3.0.0专用）
+    - name: 修补 build.prop（3.0.0专用强制补全system属性）
       shell: bash
       run: |
         BOOT_IMG="${{ github.workspace }}/input/boot.img"
@@ -78,7 +78,6 @@ runs:
         echo "[AIK] 解包 boot.img"
         ./unpackimg.sh "$BOOT_IMG"
 
-        # 查找 build.prop，找不到则自动创建
         BUILD_PROP=$(find ramdisk -name "build.prop" 2>/dev/null | head -1)
         if [ -z "$BUILD_PROP" ]; then
           echo "[修补] 未找到build.prop，自动新建 ramdisk/system/build.prop"
@@ -87,28 +86,24 @@ runs:
           touch "$BUILD_PROP"
         fi
 
-        # 读取镜像内置属性
         PROP_DEV=$(grep -E "^ro.product.*device=" "$BUILD_PROP" | head -1 | cut -d= -f2)
         PROP_MFR=$(grep -E "^ro.product.*manufacturer=" "$BUILD_PROP" | head -1 | cut -d= -f2)
         PROP_MODEL=$(grep -E "^ro.product.*model=" "$BUILD_PROP" | head -1 | cut -d= -f2)
 
-        # 用户输入参数优先级最高
         FINAL_DEV=${PROP_DEV:-$DEVICE}
         FINAL_MFR=${PROP_MFR:-$MANUFACTURER}
         FINAL_MODEL=${PROP_MODEL:-$FINAL_DEV}
 
-        echo "[修补] 强制写入 3.0.0 必需的 system 系列属性"
-        cat >> "$BUILD_PROP" << EOF
-ro.product.system.device=$FINAL_DEV
-ro.product.system.model=$FINAL_MODEL
-ro.product.system.brand=$FINAL_MFR
-ro.product.system.manufacturer=$FINAL_MFR
-EOF
+        echo "[修补] 写入必需system属性"
+        echo "ro.product.system.device=$FINAL_DEV" >> "$BUILD_PROP"
+        echo "ro.product.system.model=$FINAL_MODEL" >> "$BUILD_PROP"
+        echo "ro.product.system.brand=$FINAL_MFR" >> "$BUILD_PROP"
+        echo "ro.product.system.manufacturer=$FINAL_MFR" >> "$BUILD_PROP"
 
         echo "[AIK] 重新打包镜像"
         ./repackimg.sh
         cp image-new.img "$BOOT_IMG"
-        echo "[完成] boot.prop 属性修补完毕"
+        echo "[完成] build.prop 属性修补完毕"
 
     - name: 生成TWRP设备树
       id: dtgen
@@ -129,7 +124,6 @@ EOF
           mkdir -p "$OUTPUT_BASE/tmp_dt"
           python3 -m twrpdtgen -o "$OUTPUT_BASE/tmp_dt" "$BOOT_IMG"
 
-          # 提取自动识别信息
           OMNI_MK=$(find "$OUTPUT_BASE/tmp_dt" -name "omni_*.mk" | head -1)
           if [ -n "$OMNI_MK" ]; then
             REL_PATH=$(grep -oP 'device/\K[^/]+/[^/]+(?=/device\.mk)' "$OMNI_MK" | head -1)
@@ -148,7 +142,6 @@ EOF
           rm -rf "$OUTPUT_BASE/tmp_dt"
         fi
 
-        # 输出变量
         echo "manufacturer=$MANUFACTURER" >> $GITHUB_OUTPUT
         echo "device-codename=$DEVICE" >> $GITHUB_OUTPUT
         echo "device-tree-path=$OUTPUT_BASE/$MANUFACTURER/$DEVICE" >> $GITHUB_OUTPUT
