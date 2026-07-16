@@ -1,0 +1,49 @@
+name: Generate Device Tree
+on:
+  workflow_dispatch:
+    inputs:
+      boot_img_url:
+        description: '📥 boot.img 直链下载地址（必填）'
+        required: true
+        type: string
+      manufacturer:
+        description: '🏭 设备厂商（留空自动检测）'
+        required: false
+        default: ''
+        type: string
+      device_codename:
+        description: '📱 设备代号（留空自动检测）'
+        required: false
+        default: ''
+        type: string
+jobs:
+  generate-dt:
+    name: 生成设备树
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 📂 检出代码
+        uses: actions/checkout@v4
+      - name: 🌳 生成 TWRP 设备树
+        id: dtgen
+        uses: ./
+        with:
+          boot-img-url: ${{ inputs.boot_img_url }}
+          manufacturer: ${{ inputs.manufacturer }}
+          device-codename: ${{ inputs.device_codename }}
+      - name: 📦 上传设备树
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-tree-${{ steps.dtgen.outputs.device-codename }}
+          path: device-tree/
+          compression-level: 9
+      - name: 📋 结果汇总
+        run: |
+          echo ""
+          echo "========================================"
+          echo "   ✅ 设备树生成完成！"
+          echo "========================================"
+          echo ""
+          echo "设备厂商: ${{ steps.dtgen.outputs.manufacturer }}"
+          echo "设备代号: ${{ steps.dtgen.outputs.device-codename }}"
+          echo "设备树路径: ${{ steps.dtgen.outputs.device-tree-path }}"
+          echo ""
