@@ -1,5 +1,5 @@
 name: 'TWRP Device Tree Generator'
-description: '从 boot.img 自动生成 TWRP 设备树，自动修复 ro.product.system.device 缺失报错'
+description: '从 boot.img 自动生成 TWRP 设备树，修复 ro.product.system.device 缺失报错'
 author: 'twrp-action'
 branding:
   icon: 'smartphone'
@@ -21,7 +21,7 @@ inputs:
     required: false
     default: 'device-tree'
   twrpdtgen-version:
-    description: 'twrpdtgen 版本，默认最新3.0.0，报错可填2.2.0降级'
+    description: 'twrpdtgen 版本，默认3.0.0，报错填2.2.0降级'
     required: false
     default: ''
 outputs:
@@ -63,7 +63,7 @@ runs:
         mkdir -p ${{ github.workspace }}/input
         wget -q -O ${{ github.workspace }}/input/boot.img "${{ inputs.boot-img-url }}"
 
-    - name: 修补 build.prop（3.0.0专用强制补全system属性）
+    - name: 修补 build.prop（3.0.0专用补全system属性）
       shell: bash
       run: |
         BOOT_IMG="${{ github.workspace }}/input/boot.img"
@@ -73,6 +73,8 @@ runs:
 
         echo "[AIK] 克隆 Android Image Kitchen"
         git clone --depth=1 https://github.com/osm0sis/Android-Image-Kitchen.git "$AIK_DIR"
+
+        # 关键修复：进入aik目录再执行脚本
         cd "$AIK_DIR"
 
         echo "[AIK] 解包 boot.img"
