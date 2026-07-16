@@ -20,6 +20,10 @@ inputs:
     description: '设备树输出目录 (相对 workspace 的路径)'
     required: false
     default: 'device-tree'
+  twrpdtgen-version:
+    description: 'twrpdtgen 版本 (默认最新，兼容性问题可指定 2.2.0)'
+    required: false
+    default: ''
 outputs:
   device-codename:
     description: '检测到的设备代号'
@@ -38,15 +42,23 @@ runs:
       run: |
         sudo apt-get update -qq
         sudo apt-get install -y -qq \
-          git-core python3 python3-pip unzip
+          git-core python3 python3-pip unzip cpio
         # 安装 twrpdtgen
         unset PIP_BREAK_SYSTEM_PACKAGES
         curl -sS https://bootstrap.pypa.io/get-pip.py | python3
-        pip3 install "twrpdtgen" -q
+        TWRPDTGEN_VERSION="${{ inputs.twrpdtgen-version }}"
+        if [ -n "$TWRPDTGEN_VERSION" ]; then
+          echo "安装指定版本 twrpdtgen==$TWRPDTGEN_VERSION"
+          pip3 install "twrpdtgen==$TWRPDTGEN_VERSION" -q
+        else
+          echo "安装最新版 twrpdtgen"
+          pip3 install "twrpdtgen" -q
+        fi
         # 配置 git
         git config --global user.name "TWRP Device Tree Builder"
         git config --global user.email "builder@twrp.local"
         git config --global color.ui false
+
     - name: '下载 boot.img'
       shell: bash
       run: |
@@ -54,6 +66,112 @@ runs:
         wget -q -O ${{ github.workspace }}/input/boot.img "${{ inputs.boot-img-url }}"
         echo "boot.img 下载完成"
         file ${{ github.workspace }}/input/boot.img
+
+    - name: '修补 build.prop 属性 (兼容 Android 12+)'
+      shell: bash
+      run: |
+        BOOT_IMG="${{ github.workspace }}/input/boot.img"
+        AIK_DIR="${{ github.workspace }}/aik"
+
+        echo "===== 开始修补 build.prop ====="
+
+        # 克隆 AIK 工具
+        git clone --depth=1 https://github.com/osm0sis/Android-Image-Kitchen.git "$AIK_DIR"
+        cd "$AIK_DIR"
+
+        # 解包 boot.img
+        if ! ./unpackimg.sh "$BOOT_IMG"; then
+          echo "⚠️ boot.img 解包失败，跳过 build.prop 修补"
+          exit 0
+        fi
+
+        # 查找 build.prop (可能在 ramdisk 根目录或子目录)
+        BUILD_PROP=$(find ramdisk -name "build.prop" -type f 2>/dev/null | head -1)
+
+        if [ -z "$BUILD_PROP" ]; then
+          echo "⚠️ 未在 ramdisk 中找到 build.prop，尝试其他位置..."
+          # 某些设备 build.prop 在 vendor 或 system 分区
+          BUILD_PROP=$(find . -path ./ramdisk -prune -o -name "build.prop" -type f -print 2>/dev/null | head -1)
+        fi
+
+        if [ -n "$BUILD_PROP" ]; then
+          echo "找到 build.prop: $BUILD_PROP"
+
+          # 提取已有属性值 (优先取 vendor/odm/device 命名空间的值)
+          get_prop_value() {
+            local prop_name=$1
+            local value=""
+            # 按优先级查找
+            for ns in vendor odm device system product; do
+              value=$(grep -m1 "ro.product.${ns}.${prop_name}" "$BUILD_PROP" 2>/dev/null | cut -d= -f2)
+              if [ -n "$value" ]; then
+                echo "$value"
+                return
+              fi
+            done
+            # 兜底：无命名空间的旧属性
+            value=$(grep -m1 "ro.product.${prop_name}" "$BUILD_PROP" 2>/dev/null | cut -d= -f2)
+            echo "$value"
+          }
+
+          DEVICE=$(get_prop_value "device")
+          MODEL=$(get_prop_value "model")
+          BRAND=$(get_prop_value "brand")
+          MANUFACTURER=$(get_prop_value "manufacturer")
+          NAME=$(get_prop_value "name")
+          MARKETNAME=$(get_prop_value "marketname")
+
+          echo "提取到的属性值:"
+          echo "  device: ${DEVICE:-未找到}"
+          echo "  model: ${MODEL:-未找到}"
+          echo "  brand: ${BRAND:-未找到}"
+          echo "  manufacturer: ${MANUFACTURER:-未找到}"
+
+          # 补全 system 命名空间下缺失的属性
+          PROPS_ADDED=0
+          add_prop_if_missing() {
+            local prop=$1
+            local value=$2
+            if [ -n "$value" ] && ! grep -q "^${prop}=" "$BUILD_PROP"; then
+              echo "${prop}=${value}" >> "$BUILD_PROP"
+              PROPS_ADDED=$((PROPS_ADDED + 1))
+              echo "  + 添加 ${prop}=${value}"
+            fi
+          }
+
+          add_prop_if_missing "ro.product.system.device" "$DEVICE"
+          add_prop_if_missing "ro.product.system.model" "$MODEL"
+          add_prop_if_missing "ro.product.system.brand" "$BRAND"
+          add_prop_if_missing "ro.product.system.manufacturer" "$MANUFACTURER"
+          add_prop_if_missing "ro.product.system.name" "$NAME"
+          add_prop_if_missing "ro.product.system.marketname" "$MARKETNAME"
+
+          # 同时补全 product 命名空间 (部分版本需要)
+          add_prop_if_missing "ro.product.product.device" "$DEVICE"
+          add_prop_if_missing "ro.product.product.model" "$MODEL"
+          add_prop_if_missing "ro.product.product.brand" "$BRAND"
+          add_prop_if_missing "ro.product.product.manufacturer" "$MANUFACTURER"
+
+          if [ "$PROPS_ADDED" -gt 0 ]; then
+            echo "共补全 ${PROPS_ADDED} 个属性"
+
+            # 重新打包 boot.img
+            echo "重新打包 boot.img..."
+            if ./repackimg.sh; then
+              cp image-new.img "$BOOT_IMG"
+              echo "✅ boot.img 已更新，修补完成"
+            else
+              echo "⚠️ 重新打包失败，使用原始 boot.img"
+            fi
+          else
+            echo "属性齐全，无需修补"
+          fi
+        else
+          echo "⚠️ 未找到 build.prop 文件，跳过修补"
+        fi
+
+        echo "===== build.prop 修补完成 ====="
+
     - name: '生成设备树'
       id: dtgen
       shell: bash
@@ -61,74 +179,106 @@ runs:
         OUTPUT_BASE="${{ github.workspace }}/${{ inputs.output-dir }}"
         mkdir -p "$OUTPUT_BASE"
         cd "$OUTPUT_BASE"
-        
+
         BOOT_IMG="${{ github.workspace }}/input/boot.img"
         MANUFACTURER="${{ inputs.manufacturer }}"
         DEVICE="${{ inputs.device-codename }}"
-        
-        # 如果未指定厂商和设备，先用 twrpdtgen 生成到临时目录
-        if [ -z "$MANUFACTURER" ] || [ -z "$DEVICE" ]; then
-          echo "使用 twrpdtgen 自动生成设备树..."
+
+        echo "===== 生成设备树 ====="
+        echo "输入参数 - 厂商: ${MANUFACTURER:-自动检测}, 设备: ${DEVICE:-自动检测}"
+
+        # 情况1：用户同时指定了厂商和设备，直接生成到指定目录
+        if [ -n "$MANUFACTURER" ] && [ -n "$DEVICE" ]; then
+          echo "使用用户指定的厂商和设备直接生成..."
+          mkdir -p "$MANUFACTURER"
+          python3 -m twrpdtgen -o "$MANUFACTURER/$DEVICE" "$BOOT_IMG"
+          echo "设备树生成完成: $MANUFACTURER/$DEVICE"
+
+        # 情况2：只指定了部分参数或完全没指定，先自动生成再提取信息
+        else
+          echo "使用 twrpdtgen 自动生成并检测设备信息..."
           mkdir -p tmp_device
-          python3 -m twrpdtgen -o tmp_device "$BOOT_IMG"
-          
-          # 从 AndroidProducts.mk 中提取设备名
+
+          if ! python3 -m twrpdtgen -o tmp_device "$BOOT_IMG"; then
+            echo "❌ twrpdtgen 生成失败"
+            echo ""
+            echo "可能的解决方法:"
+            echo "1. 手动指定 manufacturer 和 device-codename 参数"
+            echo "2. 设置 twrpdtgen-version 为 2.2.0 (旧版兼容性更好)"
+            echo "3. 确认 boot.img 是否完整有效"
+            exit 1
+          fi
+
+          # 从生成的文件中提取设备信息
+          DETECTED_DEVICE=""
+          DETECTED_MANUFACTURER=""
+
+          # 尝试从 AndroidProducts.mk 提取
           if [ -f "tmp_device/AndroidProducts.mk" ]; then
-            DETECTED_DEVICE=$(grep -oP 'PRODUCT_NAME.*=\s*\Komni_\K.+' tmp_device/AndroidProducts.mk | head -1)
+            DETECTED_DEVICE=$(grep -oP 'PRODUCT_NAME.*=\s*omni_\K.+' tmp_device/AndroidProducts.mk | head -1)
             if [ -z "$DETECTED_DEVICE" ]; then
               DETECTED_DEVICE=$(grep -oP 'PRODUCT_DEVICE.*=\s*\K.+' tmp_device/AndroidProducts.mk | head -1)
             fi
           fi
-          
-          # 从 BoardConfig.mk 尝试提取厂商信息
-          if [ -f "tmp_device/BoardConfig.mk" ]; then
+
+          # 尝试从 omni_*.mk 提取路径信息
+          OMNI_MK=$(find tmp_device -name "omni_*.mk" -type f | head -1)
+          if [ -n "$OMNI_MK" ]; then
+            INCLUDE_PATH=$(grep -oP 'device/\K[^/]+/[^/]+(?=/device\.mk)' "$OMNI_MK" 2>/dev/null | head -1)
+            if [ -n "$INCLUDE_PATH" ]; then
+              DETECTED_MANUFACTURER=$(echo "$INCLUDE_PATH" | cut -d'/' -f1)
+              DETECTED_DEVICE=$(echo "$INCLUDE_PATH" | cut -d'/' -f2)
+            fi
+          fi
+
+          # 尝试从 BoardConfig.mk 提取平台信息作为厂商兜底
+          if [ -z "$DETECTED_MANUFACTURER" ] && [ -f "tmp_device/BoardConfig.mk" ]; then
             DETECTED_MANUFACTURER=$(grep -oP 'TARGET_BOARD_PLATFORM.*=\s*\K.+' tmp_device/BoardConfig.mk | head -1)
           fi
-          
-          # 默认值兜底
-          DETECTED_MANUFACTURER=${DETECTED_MANUFACTURER:-unknown}
-          DETECTED_DEVICE=${DETECTED_DEVICE:-generic}
+
+          # 合并用户输入（用户输入优先）
           MANUFACTURER=${MANUFACTURER:-$DETECTED_MANUFACTURER}
           DEVICE=${DEVICE:-$DETECTED_DEVICE}
-          
-          # 移动到正确的 device/manufacturer/device 目录
+
+          # 最终兜底值
+          MANUFACTURER=${MANUFACTURER:-unknown}
+          DEVICE=${DEVICE:-generic}
+
+          echo "检测结果 - 厂商: $MANUFACTURER, 设备: $DEVICE"
+
+          # 移动到正确的 device/manufacturer/device 目录结构
           mkdir -p "$MANUFACTURER"
           mv tmp_device "$MANUFACTURER/$DEVICE"
-        else
-          # 用户指定了厂商和设备，直接生成
-          mkdir -p "$MANUFACTURER"
-          python3 -m twrpdtgen -o "$MANUFACTURER/$DEVICE" "$BOOT_IMG"
         fi
-        
-        echo "设备厂商: $MANUFACTURER"
-        echo "设备代号: $DEVICE"
-        
+
         # 修复 twrpdtgen 3.x 嵌套目录问题（自动扁平化路径）
-        echo "===== 检查设备树路径 ====="
+        echo ""
+        echo "===== 检查并修正设备树路径 ====="
         OMNI_MK=$(find "$OUTPUT_BASE" -name "omni_*.mk" -type f | head -1)
+
         if [ -n "$OMNI_MK" ]; then
           ACTUAL_DT_DIR=$(dirname "$OMNI_MK")
           echo "omni 文件实际位置: $ACTUAL_DT_DIR"
-          
-          # 从 omni 文件中解析它 include 的 device.mk 路径，得到正确的厂商/代号
+
+          # 从 omni 文件中解析期望路径
           INCLUDE_PATH=$(grep -oP 'device/\K[^/]+/[^/]+(?=/device\.mk)' "$OMNI_MK" | head -1)
-          
+
           if [ -n "$INCLUDE_PATH" ]; then
             CORRECT_MANUFACTURER=$(echo "$INCLUDE_PATH" | cut -d'/' -f1)
             CORRECT_DEVICE=$(echo "$INCLUDE_PATH" | cut -d'/' -f2)
             CORRECT_DIR="$OUTPUT_BASE/$INCLUDE_PATH"
-            
+
             echo "omni 文件期望路径: device/$INCLUDE_PATH"
-            
+
             if [ "$ACTUAL_DT_DIR" != "$CORRECT_DIR" ]; then
-              echo "检测到嵌套目录，正在修正路径..."
+              echo "检测到路径不匹配，正在修正..."
               mkdir -p "$(dirname "$CORRECT_DIR")"
               mv "$ACTUAL_DT_DIR" "$CORRECT_DIR"
-              
+
               # 更新为修正后的值
               MANUFACTURER="$CORRECT_MANUFACTURER"
               DEVICE="$CORRECT_DEVICE"
-              
+
               # 清理残留的空目录
               find "$OUTPUT_BASE" -type d -empty -delete 2>/dev/null || true
               echo "路径修正完成: device/$MANUFACTURER/$DEVICE"
@@ -136,47 +286,57 @@ runs:
               echo "路径已正确，无需修正"
             fi
           else
-            echo "⚠️  无法从 omni 文件解析路径，跳过修正"
+            echo "⚠️ 无法从 omni 文件解析路径，跳过修正"
           fi
         else
-          echo "⚠️  未找到 omni_*.mk，设备树生成可能失败"
+          echo "⚠️ 未找到 omni_*.mk，设备树生成可能不完整"
         fi
-        echo "=========================="
-        
+
         # 修复常见编译问题
+        echo ""
+        echo "===== 修复常见编译问题 ====="
         BOARD_CONFIG="$OUTPUT_BASE/$MANUFACTURER/$DEVICE/BoardConfig.mk"
+
         if [ -f "$BOARD_CONFIG" ]; then
-          # 禁用 AVB 避免分区大小报错（强制覆盖）
+          # 1. 禁用 AVB 避免分区大小报错
           if grep -q "BOARD_AVB_ENABLE" "$BOARD_CONFIG"; then
             sed -i 's/BOARD_AVB_ENABLE.*/BOARD_AVB_ENABLE := false/' "$BOARD_CONFIG"
+            echo "✓ 已禁用 BOARD_AVB_ENABLE"
           else
             echo "BOARD_AVB_ENABLE := false" >> "$BOARD_CONFIG"
+            echo "✓ 已添加 BOARD_AVB_ENABLE := false"
           fi
-          
-          # 修复 mkbootimg --dtb 参数兼容问题
+
+          # 2. 修复 mkbootimg --dtb 参数兼容问题
           if grep -q "\-\-dtb" "$BOARD_CONFIG"; then
             sed -i 's/--dtb/--dt/g' "$BOARD_CONFIG"
+            echo "✓ 已修复 --dtb 参数为 --dt"
           fi
-          
-          # 修复 recovery-as-boot 必须搭配 system_root_image 的问题
+
+          # 3. 修复 recovery-as-boot 必须搭配 system_root_image 的问题
           if grep -q "BOARD_USES_RECOVERY_AS_BOOT.*true" "$BOARD_CONFIG"; then
             if ! grep -q "BOARD_BUILD_SYSTEM_ROOT_IMAGE" "$BOARD_CONFIG"; then
               echo "BOARD_BUILD_SYSTEM_ROOT_IMAGE := true" >> "$BOARD_CONFIG"
-              echo "已启用 BOARD_BUILD_SYSTEM_ROOT_IMAGE (配合 recovery-as-boot)"
+              echo "✓ 已启用 BOARD_BUILD_SYSTEM_ROOT_IMAGE (配合 recovery-as-boot)"
             fi
           fi
+
+          # 4. 添加 AB 分区支持检测与修复
+          if grep -q "AB_OTA_UPDATER.*true" "$BOARD_CONFIG"; then
+            echo "检测到 AB 分区设备"
+          fi
+        else
+          echo "⚠️ 未找到 BoardConfig.mk，跳过编译修复"
         fi
-        
+
         # 输出结果
-        echo "MANUFACTURER=$MANUFACTURER" >> $GITHUB_ENV
-        echo "DEVICE_CODENAME=$DEVICE" >> $GITHUB_ENV
-        echo "manufacturer=$MANUFACTURER" >> $GITHUB_OUTPUT
-        echo "device-codename=$DEVICE" >> $GITHUB_OUTPUT
-        echo "device-tree-path=$OUTPUT_BASE/$MANUFACTURER/$DEVICE" >> $GITHUB_OUTPUT
-        
         echo ""
         echo "===== 设备树生成完成 ====="
         echo "厂商: $MANUFACTURER"
         echo "代号: $DEVICE"
         echo "路径: $OUTPUT_BASE/$MANUFACTURER/$DEVICE"
         echo "=========================="
+
+        echo "manufacturer=$MANUFACTURER" >> $GITHUB_OUTPUT
+        echo "device-codename=$DEVICE" >> $GITHUB_OUTPUT
+        echo "device-tree-path=$OUTPUT_BASE/$MANUFACTURER/$DEVICE" >> $GITHUB_OUTPUT
