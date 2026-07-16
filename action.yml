@@ -1,5 +1,5 @@
 name: 'TWRP Device Tree Generator'
-description: '从 boot.img 自动生成 TWRP 设备树，修复 ro.product.system.device 缺失报错'
+description: '从 boot.img 自动生成 TWRP 设备树，规避3.0.0属性校验报错'
 author: 'twrp-action'
 branding:
   icon: 'smartphone'
@@ -9,28 +9,24 @@ inputs:
     description: 'boot.img / recovery.img 直链下载地址'
     required: true
   manufacturer:
-    description: '设备厂商名称，优先覆盖镜像属性'
+    description: '设备厂商名称'
     required: false
     default: ''
   device-codename:
-    description: '设备代号，优先覆盖镜像属性'
+    description: '设备代号'
     required: false
     default: ''
   output-dir:
     description: '设备树输出目录'
     required: false
     default: 'device-tree'
-  twrpdtgen-version:
-    description: 'twrpdtgen 版本，默认3.0.0，报错填2.2.0降级'
-    required: false
-    default: ''
 outputs:
   device-codename:
     description: '最终设备代号'
     value: ${{ steps.dtgen.outputs.device-codename }}
   manufacturer:
     description: '最终厂商名'
-    value: ${{ steps.dtgen.outputs.manufacturer }}
+    value: ${{ steps.dtgen.outputs.device-codename }}
   device-tree-path:
     description: '设备树完整路径'
     value: ${{ steps.dtgen.outputs.device-tree-path }}
@@ -43,17 +39,12 @@ runs:
         sudo apt-get update -qq
         sudo apt-get install -y -qq git-core python3 python3-pip unzip cpio
 
-    - name: 安装 twrpdtgen
+    - name: 安装兼容版 twrpdtgen 2.2.0（绕过严格属性校验）
       shell: bash
       run: |
         unset PIP_BREAK_SYSTEM_PACKAGES
         curl -sS https://bootstrap.pypa.io/get-pip.py | python3
-        VER="${{ inputs.twrpdtgen-version }}"
-        if [ -n "$VER" ]; then
-          pip3 install "twrpdtgen==$VER" -q
-        else
-          pip3 install twrpdtgen -q
-        fi
+        pip3 install "twrpdtgen==2.2.0" -q
         git config --global user.name "DT Builder"
         git config --global user.email "builder@twrp.local"
 
@@ -62,61 +53,6 @@ runs:
       run: |
         mkdir -p ${{ github.workspace }}/input
         wget -q -O ${{ github.workspace }}/input/boot.img "${{ inputs.boot-img-url }}"
-
-    - name: 修补 build.prop（3.0.0专用补全system属性）
-      shell: bash
-      run: |
-        BOOT_IMG="${{ github.workspace }}/input/boot.img"
-        AIK_DIR="${{ github.workspace }}/aik"
-        MANUFACTURER="${{ inputs.manufacturer }}"
-        DEVICE="${{ inputs.device-codename }}"
-
-        echo "[AIK] 克隆 Android Image Kitchen"
-        rm -rf "$AIK_DIR"
-        git clone https://github.com/osm0sis/Android-Image-Kitchen.git "$AIK_DIR"
-
-        cd "$AIK_DIR"
-        ls -la
-        # Linux 脚本是 unpackimg / repackimg，不带 .sh
-        if [ ! -f "./unpackimg" ]; then
-          echo "ERROR: unpackimg 不存在，重新完整克隆"
-          cd ..
-          rm -rf "$AIK_DIR"
-          git clone https://github.com/osm0sis/Android-Image-Kitchen.git "$AIK_DIR"
-          cd "$AIK_DIR"
-        fi
-
-        chmod +x unpackimg repackimg
-
-        echo "[AIK] 解包 boot.img"
-        ./unpackimg "$BOOT_IMG"
-
-        BUILD_PROP=$(find ramdisk -name "build.prop" 2>/dev/null | head -1)
-        if [ -z "$BUILD_PROP" ]; then
-          echo "[修补] 未找到build.prop，自动新建 ramdisk/system/build.prop"
-          mkdir -p ramdisk/system
-          BUILD_PROP=ramdisk/system/build.prop
-          touch "$BUILD_PROP"
-        fi
-
-        PROP_DEV=$(grep -E "^ro.product.*device=" "$BUILD_PROP" | head -1 | cut -d= -f2)
-        PROP_MFR=$(grep -E "^ro.product.*manufacturer=" "$BUILD_PROP" | head -1 | cut -d= -f2)
-        PROP_MODEL=$(grep -E "^ro.product.*model=" "$BUILD_PROP" | head -1 | cut -d= -f2)
-
-        FINAL_DEV=${PROP_DEV:-$DEVICE}
-        FINAL_MFR=${PROP_MFR:-$MANUFACTURER}
-        FINAL_MODEL=${PROP_MODEL:-$FINAL_DEV}
-
-        echo "[修补] 写入必需system属性"
-        echo "ro.product.system.device=$FINAL_DEV" >> "$BUILD_PROP"
-        echo "ro.product.system.model=$FINAL_MODEL" >> "$BUILD_PROP"
-        echo "ro.product.system.brand=$FINAL_MFR" >> "$BUILD_PROP"
-        echo "ro.product.system.manufacturer=$FINAL_MFR" >> "$BUILD_PROP"
-
-        echo "[AIK] 重新打包镜像"
-        ./repackimg
-        cp image-new.img "$BOOT_IMG"
-        echo "[完成] build.prop 属性修补完毕"
 
     - name: 生成TWRP设备树
       id: dtgen
