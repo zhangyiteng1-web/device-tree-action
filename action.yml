@@ -77,18 +77,19 @@ runs:
 
         cd "$AIK_DIR"
         ls -la
-        if [ ! -f "./unpackimg.sh" ]; then
-          echo "ERROR: unpackimg.sh 不存在，重新完整克隆"
+        # Linux 脚本是 unpackimg / repackimg，不带 .sh
+        if [ ! -f "./unpackimg" ]; then
+          echo "ERROR: unpackimg 不存在，重新完整克隆"
           cd ..
           rm -rf "$AIK_DIR"
           git clone https://github.com/osm0sis/Android-Image-Kitchen.git "$AIK_DIR"
           cd "$AIK_DIR"
         fi
 
-        chmod +x unpackimg.sh repackimg.sh
+        chmod +x unpackimg repackimg
 
         echo "[AIK] 解包 boot.img"
-        ./unpackimg.sh "$BOOT_IMG"
+        ./unpackimg "$BOOT_IMG"
 
         BUILD_PROP=$(find ramdisk -name "build.prop" 2>/dev/null | head -1)
         if [ -z "$BUILD_PROP" ]; then
@@ -113,7 +114,7 @@ runs:
         echo "ro.product.system.manufacturer=$FINAL_MFR" >> "$BUILD_PROP"
 
         echo "[AIK] 重新打包镜像"
-        ./repackimg.sh
+        ./repackimg
         cp image-new.img "$BOOT_IMG"
         echo "[完成] build.prop 属性修补完毕"
 
