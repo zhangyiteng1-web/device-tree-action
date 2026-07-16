@@ -72,10 +72,20 @@ runs:
         DEVICE="${{ inputs.device-codename }}"
 
         echo "[AIK] 克隆 Android Image Kitchen"
-        git clone --depth=1 https://github.com/osm0sis/Android-Image-Kitchen.git "$AIK_DIR"
+        rm -rf "$AIK_DIR"
+        git clone https://github.com/osm0sis/Android-Image-Kitchen.git "$AIK_DIR"
 
-        # 关键修复：进入aik目录再执行脚本
         cd "$AIK_DIR"
+        ls -la
+        if [ ! -f "./unpackimg.sh" ]; then
+          echo "ERROR: unpackimg.sh 不存在，重新完整克隆"
+          cd ..
+          rm -rf "$AIK_DIR"
+          git clone https://github.com/osm0sis/Android-Image-Kitchen.git "$AIK_DIR"
+          cd "$AIK_DIR"
+        fi
+
+        chmod +x unpackimg.sh repackimg.sh
 
         echo "[AIK] 解包 boot.img"
         ./unpackimg.sh "$BOOT_IMG"
